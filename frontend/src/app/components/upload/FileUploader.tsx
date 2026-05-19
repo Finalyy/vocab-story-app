@@ -15,8 +15,13 @@ export default function FileUploader({ onUploadSuccess, setExternalLoading, setE
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const getBackendUrl = () => {
-    if (typeof window !== "undefined") return `http://${window.location.hostname}:8000/api/v1`;
-    return "http://127.0.0.1:8000/api/v1";
+    // 1. Nếu bạn đang chạy thử trên máy tính (Local) hoặc điện thoại chung Wifi
+    if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname.startsWith("192.168."))) {
+      // Ép về IP local máy tính của bạn (Hãy đổi 127.0.0.1 thành IP mạng nội bộ của bạn nếu test trên điện thoại)
+      return "http://127.0.0.1:8000/api/v1";
+    }
+    // 2. Nếu chạy bản online trên mạng, tự động gọi lên Render Cloud
+    return "https://vocab-story-api.onrender.com/api/v1"; // <-- Hãy thay link Render thật của bạn vào đây nếu deploy online
   };
 
   const processUploadedFile = async (file: File) => {

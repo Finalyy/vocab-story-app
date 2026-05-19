@@ -3,11 +3,12 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
   BookOpen, Volume2, Info, Loader2, Sparkles,
-  Image as ImageIcon, AlertCircle, BookMarked, Tags, Library, Printer, Trash2, X
+  Image as ImageIcon, AlertCircle, CheckCircle, BookMarked, Tags,
+  Library, Printer, Trash2, X
 } from "lucide-react";
-import ToastProvider from "../components/providers/ToastProvider";
-import FileUploader from "../components/upload/FileUploader";
-import WordList from "../components/dictionary/WordList";
+import ToastProvider from "./components/providers/ToastProvider";
+import FileUploader from "./components/upload/FileUploader";
+import WordList from "./components/dictionary/WordList";
 
 // --- CÁC INTERFACES DỮ LIỆU ---
 interface StoryScene { text: string; image_prompt: string; image_url?: string; image_loading?: boolean; }
@@ -126,9 +127,10 @@ export default function Page() {
   const [mounted, setMounted] = useState(false);
 
   const getBackendUrl = () => {
-    if (process.env.NEXT_PUBLIC_API_URL) return process.env.NEXT_PUBLIC_API_URL;
-    if (typeof window !== "undefined") return `http://${window.location.hostname}:8000/api/v1`;
-    return "http://127.0.0.1:8000/api/v1";
+    if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname.startsWith("192.168."))) {
+      return "http://127.0.0.1:8000/api/v1";
+    }
+    return "https://vocab-story-api.onrender.com/api/v1";
   };
 
   useEffect(() => {
@@ -195,11 +197,13 @@ export default function Page() {
   };
 
   const speakWord = (text: string) => window.speechSynthesis?.speak(new SpeechSynthesisUtterance(text));
- const getVocabChips = () => {
-  // Nếu không có inputText hoặc dữ liệu không phải là chữ, trả về mảng rỗng [] ngay để không bị sập app
-  if (!inputText || typeof inputText !== "string") return [];
-  return inputText.split(",").map(w => w.trim()).filter(w => w.length > 0);
-};
+  
+  const getVocabChips = () => {
+    if (!inputText || typeof inputText !== "string") return [];
+    return inputText.split(",").map(w => w.trim()).filter(w => w.length > 0);
+  };
+
+  const saveCurrentStory = () => {
     if (!scenes) return;
     const newStory = { id: Date.now().toString(), date: new Date().toLocaleString('vi-VN'), title: `Truyện: ${getVocabChips()?.slice(0, 3).join(", ")}...`, scenes };
     setSavedStories([newStory, ...savedStories]);
