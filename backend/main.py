@@ -145,46 +145,38 @@ class StoryResponseSchema(BaseModel):
 
 @app.post("/api/v1/generate-story")
 async def generate_story(request: StoryRequest):
+    import os, json
+    import google.generativeai as genai
     try:
-        # Cấu hình AI lấy API Key đã nạp trên Render
-        import os
         api_key = os.environ.get("GEMINI_API_KEY")
         if not api_key:
-            raise HTTPException(status_code=500, detail="Missing Gemini API Key")
-        
+            return {"scenes": [{"text": "Lỗi: Chưa có API Key trên Render.", "image_prompt": ""}]}
+
         genai.configure(api_key=api_key)
-        
-        # Sử dụng dòng mô hình ổn định nhất cho cấu trúc dữ liệu
         model = genai.GenerativeModel('gemini-1.5-flash')
         
         vocab_text = ", ".join(request.vocabularies)
-        
         prompt = f"""
-        You are a creative writer. Write a short, engaging story that integrates the following vocabularies naturally: {vocab_text}.
-        The story must be written in {request.target_language} (with brief {request.source_language} meanings embedded right after each target word if necessary for learners).
-        
-        Divide the story into 3 to 5 chronological comic scenes.
-        For each scene, provide:
-        1. 'text': The narrative text of the scene.
-        2. 'image_prompt': A vivid, detailed description (in English) to generate a beautiful comic-style illustration for this scene.
+        You MUST return ONLY a valid JSON object. Do not use Markdown.
+        Write a short 3-scene story using these words: {vocab_text}.
+        Strict JSON format:
+        {{
+            "scenes": [
+                {{"text": "Scene text here", "image_prompt": "English description for illustration"}}
+            ]
+        }}
         """
         
-        # ÉP GEMINI TRẢ VỀ ĐÚNG ĐỊNH DẠNG PYDANTIC SCHEMA
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
-                response_schema=StoryResponseSchema
-            )
-        )
+        response = model.generate_content(prompt)
         
-        # Giải mã kết quả trả về an toàn
-        result = json.loads(response.text)
-        return result
+        # Dọn sạch 100% rác markdown nếu AI lỡ sinh ra
+        clean_text = response.text.replace("```json", "").replace("```", "").strip()
+        
+        return json.loads(clean_text)
 
     except Exception as e:
-        print(f"Lỗi hệ thống: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Nếu có lỗi, in thẳng lỗi ra màn hình truyện thay vì làm sập App
+        return {"scenes": [{"text": f"Lỗi Server: {str(e)}", "image_prompt": ""}]}
 
 @app.post("/api/v1/generate-image")
 async def generate_image(request: ImageRequest):
