@@ -6,3 +6,4 @@ python-dotenv
 pypdf
 requests
 python-multipart
+gunicorn
