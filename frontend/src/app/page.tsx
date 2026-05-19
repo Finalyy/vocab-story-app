@@ -195,9 +195,11 @@ export default function Page() {
   };
 
   const speakWord = (text: string) => window.speechSynthesis?.speak(new SpeechSynthesisUtterance(text));
-  const getVocabChips = () => inputText.split(",").map(w => w.trim()).filter(w => w.length > 0);
-
-  const saveCurrentStory = () => {
+ const getVocabChips = () => {
+  // Nếu không có inputText hoặc dữ liệu không phải là chữ, trả về mảng rỗng [] ngay để không bị sập app
+  if (!inputText || typeof inputText !== "string") return [];
+  return inputText.split(",").map(w => w.trim()).filter(w => w.length > 0);
+};
     if (!scenes) return;
     const newStory = { id: Date.now().toString(), date: new Date().toLocaleString('vi-VN'), title: `Truyện: ${getVocabChips()?.slice(0, 3).join(", ")}...`, scenes };
     setSavedStories([newStory, ...savedStories]);
@@ -250,7 +252,7 @@ export default function Page() {
                 )}
 
                 {/* COMPONENT WORD LIST */}
-                {chips && chips.length > 0 && (
+                {chips && Array.isArray(chips) && chips.length > 0 && (
                   <div className="mb-5">
                     <span className="text-xs font-bold text-slate-400 uppercase flex items-center gap-1 mb-2"><Tags size={14} /> Từ vựng đã nạp ({chips.length})</span>
                     <WordList words={chips} onWordClick={handleWordClick} />
