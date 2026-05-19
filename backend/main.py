@@ -127,28 +127,61 @@ async def extract_vocab(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lỗi trích xuất: {str(e)}")
 
+from pydantic import BaseModel
+from typing import List
+import google.generativeai as genai
+import json
+
+# 1. Định nghĩa cấu trúc khung truyện bắt buộc AI tuân theo
+class StorySceneSchema(BaseModel):
+    text: str
+    image_prompt: str
+
+class StoryResponseSchema(BaseModel):
+    scenes: List[StorySceneSchema]
+
 @app.post("/api/v1/generate-story")
 async def generate_story(request: StoryRequest):
     try:
-        vocab_str = ", ".join(request.vocabularies)
+        # Cấu hình AI lấy API Key đã nạp trên Render
+        import os
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            raise HTTPException(status_code=500, detail="Missing Gemini API Key")
+        
+        genai.configure(api_key=api_key)
+        
+        # Sử dụng dòng mô hình ổn định nhất cho cấu trúc dữ liệu
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        vocab_text = ", ".join(request.vocabularies)
+        
         prompt = f"""
-        Viết một câu chuyện tiếng {request.source_language}, chêm các từ {request.target_language} sau: {vocab_str}.
-        QUY TẮC:
-        1. Dùng 100% từ vựng. CẤM bọc từ tiếng Anh trong dấu nháy ('', "").
-        2. Ghi nghĩa tiếng {request.source_language} trong ngoặc đơn ngay sau từ.
-        3. Chia thành 2-4 cảnh. Mỗi đoạn viết 1 câu tiếng Anh miêu tả cảnh (image_prompt).
-        BẮT BUỘC TRẢ VỀ JSON VỚI CẤU TRÚC:
-        {{
-            "scenes": [
-                {{"text": "Nội dung...", "image_prompt": "Mô tả cảnh..."}}
-            ]
-        }}
+        You are a creative writer. Write a short, engaging story that integrates the following vocabularies naturally: {vocab_text}.
+        The story must be written in {request.target_language} (with brief {request.source_language} meanings embedded right after each target word if necessary for learners).
+        
+        Divide the story into 3 to 5 chronological comic scenes.
+        For each scene, provide:
+        1. 'text': The narrative text of the scene.
+        2. 'image_prompt': A vivid, detailed description (in English) to generate a beautiful comic-style illustration for this scene.
         """
-        response = model_json.generate_content(prompt)
-        story_data = json.loads(response.text)
-        return {"status": "success", "scenes": story_data.get("scenes", [])}
+        
+        # ÉP GEMINI TRẢ VỀ ĐÚNG ĐỊNH DẠNG PYDANTIC SCHEMA
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                response_mime_type="application/json",
+                response_schema=StoryResponseSchema
+            )
+        )
+        
+        # Giải mã kết quả trả về an toàn
+        result = json.loads(response.text)
+        return result
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi dệt truyện: {str(e)}")
+        print(f"Lỗi hệ thống: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/v1/generate-image")
 async def generate_image(request: ImageRequest):
