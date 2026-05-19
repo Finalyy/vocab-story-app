@@ -153,7 +153,7 @@ async def generate_story(request: StoryRequest):
             return {"scenes": [{"text": "Lỗi: Chưa có API Key trên Render.", "image_prompt": ""}]}
 
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        model = genai.GenerativeModel('gemini-pro')
         
         vocab_text = ", ".join(request.vocabularies)
         prompt = f"""
