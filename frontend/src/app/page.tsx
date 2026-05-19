@@ -118,8 +118,10 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Động URL kết nối Backend
-  const getBackendUrl = () => `http://${window.location.hostname}:8000/api/v1`;
-
+const getBackendUrl = () => {
+  // Ưu tiên dùng đường link đã cấu hình trên Vercel
+  return process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
+};
   useEffect(() => {
     setMounted(true);
     const stored = localStorage.getItem("vocabStoriesLibrary");
