@@ -1,10 +1,10 @@
 import os
 import io
 import json
+import base64
 import requests
 import pypdf
 import uvicorn
-import google.generativeai as genai
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -16,11 +16,8 @@ from collections import OrderedDict
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-
-# --- 2. CẤU HÌNH APP & BỘ NHỚ ĐỆM ---
-app = FastAPI(title="VocabStory Pro API", version="6.0.0")
+# --- 2. CẤU HÌNH APP & CACHE ---
+app = FastAPI(title="VocabStory Pro API", version="7.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,7 +39,7 @@ class LRUCache(OrderedDict):
 
 document_cache = LRUCache(capacity=50)
 
-# --- 3. SCHEMAS TỐI ƯU ---
+# --- 3. SCHEMAS ---
 class StoryRequest(BaseModel):
     vocabularies: List[str]
     source_language: str = "Vietnamese"
@@ -51,44 +48,40 @@ class StoryRequest(BaseModel):
 class ImageRequest(BaseModel):
     prompt: str
 
-# --- 4. HÀM AI "BẤT TỬ" TỰ ĐỘNG CHUYỂN MODEL KHI LỖI ---
-def generate_with_fallback(prompt, file_data=None, mime_type=None):
-    # Danh sách model được quét tự động để chống lỗi 404
-    models_to_try = [
-        'gemini-1.5-flash-latest', 
-        'gemini-1.5-flash', 
-        'gemini-1.0-pro', 
-        'gemini-pro'
-    ]
-    last_error = ""
+# --- 4. HÀM GỌI TRỰC TIẾP GOOGLE API (KHÔNG DÙNG THƯ VIỆN) ---
+def call_gemini_direct(prompt: str, file_bytes=None, mime_type=None):
+    if not GEMINI_API_KEY:
+        raise Exception("Chưa cấu hình GEMINI_API_KEY")
+        
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
     
-    for m in models_to_try:
-        try:
-            model = genai.GenerativeModel(m)
-            if file_data and mime_type:
-                response = model.generate_content([{"mime_type": mime_type, "data": file_data}, prompt])
-            else:
-                response = model.generate_content(prompt)
-            return response
-        except Exception as e:
-            last_error = str(e)
-            continue
-            
-    raise Exception(f"Google API từ chối tất cả Model. Lỗi: {last_error}")
+    parts = [{"text": prompt}]
+    if file_bytes and mime_type:
+        parts.insert(0, {
+            "inline_data": {
+                "mime_type": mime_type,
+                "data": base64.b64encode(file_bytes).decode('utf-8')
+            }
+        })
 
-def clean_json_response(text):
-    return text.replace("```json", "").replace("```", "").strip()
+    payload = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {"responseMimeType": "application/json"}
+    }
+    
+    res = requests.post(url, json=payload, headers={"Content-Type": "application/json"})
+    
+    if res.status_code == 200:
+        data = res.json()
+        raw_text = data['candidates'][0]['content']['parts'][0]['text']
+        # Dọn dẹp rác markdown nếu có
+        return raw_text.replace("```json", "").replace("```", "").strip()
+    else:
+        raise Exception(f"Google API Error: {res.text}")
 
 # --- 5. CÁC API ENDPOINTS ---
-@app.get("/")
-def read_root():
-    return {"status": "Production Ready", "version": "6.0.0"}
-
 @app.post("/api/v1/extract-vocab")
 async def extract_vocab(file: UploadFile = File(...)):
-    if not GEMINI_API_KEY:
-         return {"filename": file.filename, "extracted_words": ["hospital", "patient", "care", "medicine"]}
-
     try:
         file_bytes = await file.read()
         mime_type = file.content_type or "application/pdf"
@@ -102,11 +95,11 @@ async def extract_vocab(file: UploadFile = File(...)):
 
             prompt = f"""
             Trích xuất danh sách các từ vựng tiếng Anh mục tiêu từ tài liệu sau.
-            TÀI LIỆU: {extracted_text[:35000]}
+            TÀI LIỆU: {extracted_text[:15000]}
             BẮT BUỘC TRẢ VỀ JSON VỚI CẤU TRÚC:
             {{"extracted_words": ["word1", "word2"], "raw_text": "bản sao nội dung..."}}
             """
-            response = generate_with_fallback(prompt)
+            response_text = call_gemini_direct(prompt)
             
         else:
             prompt = """
@@ -114,9 +107,9 @@ async def extract_vocab(file: UploadFile = File(...)):
             BẮT BUỘC TRẢ VỀ JSON VỚI CẤU TRÚC:
             {"extracted_words": ["word1"], "raw_text": "văn bản..."}
             """
-            response = generate_with_fallback(prompt, file_data=file_bytes, mime_type=mime_type)
+            response_text = call_gemini_direct(prompt, file_bytes=file_bytes, mime_type=mime_type)
 
-        result_data = json.loads(clean_json_response(response.text))
+        result_data = json.loads(response_text)
         if "raw_text" in result_data:
             document_cache.put(file.filename, result_data["raw_text"])
 
@@ -129,9 +122,6 @@ async def extract_vocab(file: UploadFile = File(...)):
 @app.post("/api/v1/generate-story")
 async def generate_story(request: StoryRequest):
     try:
-        if not GEMINI_API_KEY:
-            return {"scenes": [{"text": "Lỗi: Chưa có API Key trên Render.", "image_prompt": ""}]}
-
         vocab_text = ", ".join(request.vocabularies)
         prompt = f"""
         You MUST return ONLY a valid JSON object. Do not use Markdown.
@@ -144,10 +134,8 @@ async def generate_story(request: StoryRequest):
             ]
         }}
         """
-        
-        response = generate_with_fallback(prompt)
-        return json.loads(clean_json_response(response.text))
-
+        response_text = call_gemini_direct(prompt)
+        return json.loads(response_text)
     except Exception as e:
         return {"scenes": [{"text": f"Lỗi Server: {str(e)}", "image_prompt": ""}]}
 
@@ -155,11 +143,8 @@ async def generate_story(request: StoryRequest):
 async def generate_image(request: ImageRequest):
     if not GEMINI_API_KEY:
         return {"image_url": "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=800"}
-
-    # Nâng cấp lên imagen-3.0 để tương thích ổn định với Google API hiện tại
     url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-001:predict?key={GEMINI_API_KEY}"
-    comic_prompt = f"Western comic book graphic novel illustration style, line art, flat bold colors, dynamic composition. Scene: {request.prompt}"
-    
+    comic_prompt = f"Western comic book graphic novel illustration style, line art, flat bold colors. Scene: {request.prompt}"
     try:
         res = requests.post(url, json={"instances": [{"prompt": comic_prompt}], "parameters": {"sampleCount": 1, "aspectRatio": "4:3"}}, timeout=25)
         if res.status_code == 200:
@@ -173,17 +158,14 @@ async def get_dictionary(word: str):
     try:
         full_context = list(document_cache.values())[-1] if document_cache else "Không có"
         dict_prompt = f"""
-        Tra cứu từ "{word}" theo tài liệu sau: {full_context[:10000]}
-        BẮT BUỘC TRẢ VỀ JSON VỚI CẤU TRÚC (Để trống "" nếu không có):
+        Tra cứu từ "{word}" theo tài liệu: {full_context[:5000]}
+        BẮT BUỘC TRẢ VỀ JSON (Để trống "" nếu không có):
         {{
             "word": "{word}", "meaning": "", "en_meaning": "", "example": "", "ipa": "", "pos": "", 
             "synonyms": "", "antonyms": "", "word_family": "", "collocations": "", "confusions": ""
         }}
         """
-        response = generate_with_fallback(dict_prompt)
-        return json.loads(clean_json_response(response.text))
+        response_text = call_gemini_direct(dict_prompt)
+        return json.loads(response_text)
     except Exception:
         return {"word": word, "meaning": "Vốn từ quan trọng trong tài liệu."}
-
-if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
