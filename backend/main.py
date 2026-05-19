@@ -131,7 +131,10 @@ from pydantic import BaseModel
 from typing import List
 import google.generativeai as genai
 import json
-
+class StoryRequest(BaseModel):
+    vocabularies: List[str]
+    source_language: str = "Vietnamese"
+    target_language: str = "English"
 # 1. Định nghĩa cấu trúc khung truyện bắt buộc AI tuân theo
 class StorySceneSchema(BaseModel):
     text: str
