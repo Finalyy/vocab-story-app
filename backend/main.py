@@ -1,28 +1,44 @@
+import os
+from dotenv import load_dotenv
+
+# Tải biến môi trường từ file .env
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+import io
+import json
+import requests
+import pypdf
+import uvicorn
+import google.generativeai as genai
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
-import uvicorn
-import google.generativeai as genai
-import json
-import re
-import requests
-import io
-import pypdf  # Thư viện đọc PDF siêu tốc vừa cài
+from dotenv import load_dotenv
 
-# --- CẤU HÌNH API KEY GEMINI ---
-GEMINI_API_KEY = "AIzaSyD84Bd6aCJsQ7uT0q2Z1QgFC1vJhQUUJLc"
+# --- 1. KHỞI TẠO BIẾN MÔI TRƯỜNG ---
+load_dotenv()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not GEMINI_API_KEY:
+    print("CRITICAL WARNING: Chưa có GEMINI_API_KEY trong file .env")
 
 genai.configure(api_key=GEMINI_API_KEY)
 
+# --- 2. CẤU HÌNH AI HIỆN ĐẠI (NATIVE JSON MODE) ---
+# Tách riêng 2 model: Một model chuyên nhả JSON chuẩn 100%, một model xử lý text/ảnh thường
+json_config = genai.types.GenerationConfig(response_mime_type="application/json")
+
 try:
-    model = genai.GenerativeModel('gemini-2.5-flash')
-except Exception as e:
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # Ưu tiên bản 2.5 mới nhất
+    model_json = genai.GenerativeModel('gemini-2.5-flash', generation_config=json_config)
+    model_vision = genai.GenerativeModel('gemini-2.5-flash')
+except Exception:
+    model_json = genai.GenerativeModel('gemini-1.5-flash', generation_config=json_config)
+    model_vision = genai.GenerativeModel('gemini-1.5-flash')
 
-last_uploaded_doc_text = ""
-
-app = FastAPI(title="VocabStory API", version="4.0.0")
+# --- 3. CẤU HÌNH APP & BỘ NHỚ ĐỆM TỐI ƯU ---
+app = FastAPI(title="VocabStory Pro API", version="6.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -32,6 +48,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Cache lưu trữ văn bản theo Session ID hoặc Tên file (Giới hạn 50 file để chống tràn RAM)
+from collections import OrderedDict
+class LRUCache(OrderedDict):
+    def __init__(self, capacity=50):
+        super().__init__()
+        self.capacity = capacity
+    def put(self, key, value):
+        self[key] = value
+        self.move_to_end(key)
+        if len(self) > self.capacity:
+            self.popitem(last=False)
+
+document_cache = LRUCache(capacity=50)
+
+# --- SCHEMAS TỐI ƯU ---
 class StoryRequest(BaseModel):
     vocabularies: List[str]
     source_language: str = "Vietnamese"
@@ -40,162 +71,114 @@ class StoryRequest(BaseModel):
 class ImageRequest(BaseModel):
     prompt: str
 
+# --- 4. CÁC API ENDPOINTS ---
 @app.get("/")
 def read_root():
-    return {"status": "online", "message": "Backend v4.0 - Đọc PDF siêu tốc, hỗ trợ Mobile!"}
+    return {"status": "Production Ready", "version": "6.0.0", "json_mode": "Enabled"}
 
 @app.post("/api/v1/extract-vocab")
 async def extract_vocab(file: UploadFile = File(...)):
-    global last_uploaded_doc_text
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "PASTE_YOUR_API_KEY_HERE":
-        return {"filename": file.filename, "extracted_words": ["master's degree", "talented", "career"]}
+    if not GEMINI_API_KEY:
+         return {"filename": file.filename, "extracted_words": ["hospital", "patient", "care", "medicine"]}
 
     try:
         file_bytes = await file.read()
         mime_type = file.content_type or "application/pdf"
         
-        extracted_text = ""
-
-        # Nếu là file PDF -> Dùng máy tính đọc siêu tốc trong 0.1s
-        if "pdf" in mime_type:
+        # Đọc PDF bằng CPU
+        if "pdf" in mime_type or file.filename.endswith(".pdf"):
             reader = pypdf.PdfReader(io.BytesIO(file_bytes))
-            for page in reader.pages:
-                text = page.extract_text()
-                if text:
-                    extracted_text += text + "\n"
+            extracted_text = "".join([page.extract_text() or "" for page in reader.pages])
             
-            last_uploaded_doc_text = extracted_text
+            if not extracted_text.strip():
+                raise ValueError("File PDF trống.")
+                
+            document_cache.put(file.filename, extracted_text)
 
-            # Nhờ AI nhặt từ vựng (Không bắt gõ lại văn bản nữa)
-            ocr_prompt = f"""
-            Dưới đây là nội dung tài liệu học từ vựng:
-            ---
-            {extracted_text[:40000]}
-            ---
-            Hãy trích xuất danh sách tất cả các từ vựng tiếng Anh (từ chính cần học) được định nghĩa trong tài liệu trên.
-            TRẢ VỀ CHỈ MỘT CHUỖI JSON HỢP LỆ:
-            {{
-              "extracted_words": ["word 1", "word 2"]
-            }}
+            prompt = f"""
+            Trích xuất danh sách các từ vựng tiếng Anh mục tiêu từ tài liệu sau.
+            TÀI LIỆU: {extracted_text[:35000]}
+            BẮT BUỘC TRẢ VỀ JSON VỚI CẤU TRÚC:
+            {{"extracted_words": ["word1", "word2"], "raw_text": "bản sao nội dung..."}}
             """
-            response = model.generate_content(ocr_prompt)
-        
-        # Nếu là Hình ảnh -> Vẫn dùng AI đọc ảnh đa phương thức
+            # Sử dụng model_json để ép kiểu trả về
+            response = model_json.generate_content(prompt)
+            result_data = json.loads(response.text)
+            
+        # Đọc Hình ảnh (Cần model vision thường, ép JSON trong prompt)
         else:
-            ocr_prompt = """
-            Trích xuất tất cả từ vựng tiếng Anh quan trọng và toàn bộ văn bản trong ảnh này.
-            TRẢ VỀ JSON:
-            {
-              "extracted_words": ["word 1", "word 2"],
-              "raw_text": "toàn bộ văn bản..."
-            }
+            prompt = """
+            Trích xuất toàn bộ từ vựng tiếng Anh và văn bản trong ảnh.
+            BẮT BUỘC TRẢ VỀ JSON VỚI CẤU TRÚC:
+            {"extracted_words": ["word1"], "raw_text": "văn bản..."}
             """
-            response = model.generate_content([{"mime_type": mime_type, "data": file_bytes}, ocr_prompt])
-        
-        text_response = response.text
-        match = re.search(r'\{.*\}', text_response, re.DOTALL)
-        json_str = match.group(0) if match else text_response
-            
-        result_data = json.loads(json_str)
-        
-        if "pdf" not in mime_type:
-            last_uploaded_doc_text = result_data.get("raw_text", "")
+            response = model_json.generate_content([{"mime_type": mime_type, "data": file_bytes}, prompt])
+            result_data = json.loads(response.text)
+            document_cache.put(file.filename, result_data.get("raw_text", ""))
 
-        clean_words = [str(w).lower().strip() for w in result_data.get("extracted_words", []) if len(str(w)) > 1]
+        clean_words = list(dict.fromkeys([str(w).lower().strip() for w in result_data.get("extracted_words", []) if len(str(w)) > 1]))
         return {"filename": file.filename, "extracted_words": clean_words}
-        
+
     except Exception as e:
-        print(f"Lỗi hệ thống: {e}")
-        raise HTTPException(status_code=500, detail=f"Lỗi: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Lỗi trích xuất: {str(e)}")
 
 @app.post("/api/v1/generate-story")
 async def generate_story(request: StoryRequest):
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "PASTE_YOUR_API_KEY_HERE":
-        raise HTTPException(status_code=500, detail="Thiếu API Key")
-
     try:
         vocab_str = ", ".join(request.vocabularies)
         prompt = f"""
-        Bạn là nhà văn. Hãy viết một câu chuyện bằng tiếng {request.source_language}, chêm các từ {request.target_language} sau: {vocab_str}.
-        QUY TẮC NGHIÊM NGẶT:
-        1. SỬ DỤNG 100% TỪ VỰNG: Bắt buộc dùng không sót từ nào.
-        2. KHÔNG DÙNG DẤU NHÁY: TUYỆT ĐỐI KHÔNG bọc từ tiếng {request.target_language} trong dấu nháy đơn hay nháy kép.
-        3. Mở ngoặc đơn ghi nghĩa tiếng {request.source_language} ngay sau từ.
-        4. CHIA CẢNH (SCENES): Chia câu chuyện thành 2 đến 4 đoạn. Viết 1 câu miêu tả cảnh bằng tiếng Anh cho mỗi đoạn.
-        TRẢ VỀ JSON:
+        Viết một câu chuyện tiếng {request.source_language}, chêm các từ {request.target_language} sau: {vocab_str}.
+        QUY TẮC:
+        1. Dùng 100% từ vựng. CẤM bọc từ tiếng Anh trong dấu nháy ('', "").
+        2. Ghi nghĩa tiếng {request.source_language} trong ngoặc đơn ngay sau từ.
+        3. Chia thành 2-4 cảnh. Mỗi đoạn viết 1 câu tiếng Anh miêu tả cảnh (image_prompt).
+        BẮT BUỘC TRẢ VỀ JSON VỚI CẤU TRÚC:
         {{
             "scenes": [
-                {{"text": "Nội dung...", "image_prompt": "Mô tả bằng tiếng Anh..."}}
+                {{"text": "Nội dung...", "image_prompt": "Mô tả cảnh..."}}
             ]
         }}
         """
-        response = model.generate_content(prompt)
-        text_response = response.text
-        match = re.search(r'\{.*\}', text_response, re.DOTALL)
-        json_str = match.group(0) if match else text_response
-        story_data = json.loads(json_str)
+        response = model_json.generate_content(prompt)
+        story_data = json.loads(response.text)
         return {"status": "success", "scenes": story_data.get("scenes", [])}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Lỗi dệt truyện: {str(e)}")
 
 @app.post("/api/v1/generate-image")
 async def generate_image(request: ImageRequest):
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "PASTE_YOUR_API_KEY_HERE":
+    if not GEMINI_API_KEY:
         return {"image_url": "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=800"}
 
     url = f"https://generativelanguage.googleapis.com/v1beta/models/imagen-4.0-generate-001:predict?key={GEMINI_API_KEY}"
     comic_prompt = f"Western comic book graphic novel illustration style, line art, flat bold colors, dynamic composition. Scene: {request.prompt}"
     
-    payload = {
-        "instances": [{"prompt": comic_prompt}],
-        "parameters": {"sampleCount": 1, "aspectRatio": "4:3"}
-    }
-
     try:
-        response = requests.post(url, json=payload, timeout=30)
-        if response.status_code == 200:
-            result = response.json()
-            base64_data = result["predictions"][0]["bytesBase64Encoded"]
-            return {"image_url": f"data:image/jpeg;base64,{base64_data}"}
-        else:
-            return {"image_url": "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=800"}
+        res = requests.post(url, json={"instances": [{"prompt": comic_prompt}], "parameters": {"sampleCount": 1, "aspectRatio": "4:3"}}, timeout=25)
+        if res.status_code == 200:
+            return {"image_url": f"data:image/jpeg;base64,{res.json()['predictions'][0]['bytesBase64Encoded']}"}
+        return {"image_url": "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=800"}
     except Exception:
         return {"image_url": "https://images.unsplash.com/photo-1544716278-ca5e3f4abd8c?w=800"}
 
 @app.get("/api/v1/dictionary/{word}")
 async def get_dictionary(word: str):
-    global last_uploaded_doc_text
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "PASTE_YOUR_API_KEY_HERE":
-        return {"word": word, "meaning": "Định nghĩa mẫu"}
-
     try:
-        dict_prompt = f"""
-        Nhiệm vụ: Tra cứu từ "{word}" dựa trên tài liệu sau:
-        {last_uploaded_doc_text if last_uploaded_doc_text else "Không có"}
+        # Tối ưu hóa: Tìm văn bản cuối cùng được đưa vào cache
+        full_context = list(document_cache.values())[-1] if document_cache else "Không có"
         
-        TRẢ VỀ JSON:
+        dict_prompt = f"""
+        Tra cứu từ "{word}" theo tài liệu sau: {full_context[:10000]}
+        BẮT BUỘC TRẢ VỀ JSON VỚI CẤU TRÚC (Để trống "" nếu tài liệu không có):
         {{
-          "word": "{word}",
-          "meaning": "Nghĩa tiếng Việt (Nếu tài liệu không có, ĐỂ TRỐNG '')",
-          "en_meaning": "Nghĩa tiếng Anh (Nếu tài liệu không có, ĐỂ TRỐNG '')",
-          "example": "Câu ví dụ (Nếu tài liệu không có, ĐỂ TRỐNG '')",
-          "ipa": "Phiên âm (Nếu tài liệu không có, ĐỂ TRỐNG '')",
-          "pos": "Từ loại (Nếu tài liệu không có, ĐỂ TRỐNG '')",
-          "synonyms": "Từ đồng nghĩa (Nếu tài liệu không có, ĐỂ TRỐNG '')",
-          "antonyms": "Từ trái nghĩa (Nếu tài liệu không có, ĐỂ TRỐNG '')",
-          "word_family": "Họ từ (Nếu tài liệu không có, ĐỂ TRỐNG '')",
-          "collocations": "Cụm từ thường gặp (Nếu tài liệu không có, ĐỂ TRỐNG '')",
-          "confusions": "Dễ nhầm lẫn (Nếu tài liệu không có, ĐỂ TRỐNG '')"
+            "word": "{word}", "meaning": "", "en_meaning": "", "example": "", "ipa": "", "pos": "", 
+            "synonyms": "", "antonyms": "", "word_family": "", "collocations": "", "confusions": ""
         }}
         """
-        response = model.generate_content(dict_prompt)
-        text_response = response.text
-        match = re.search(r'\{.*\}', text_response, re.DOTALL)
-        json_str = match.group(0) if match else text_response
-        return json.loads(json_str)
+        response = model_json.generate_content(dict_prompt)
+        return json.loads(response.text)
     except Exception:
-        return {"word": word}
+        return {"word": word, "meaning": "Vốn từ quan trọng trong tài liệu."}
 
 if __name__ == "__main__":
-    # ĐỔI THÀNH 0.0.0.0 ĐỂ CHO PHÉP ĐIỆN THOẠI KẾT NỐI VÀO LAPTOP CỦA BẠN!
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
