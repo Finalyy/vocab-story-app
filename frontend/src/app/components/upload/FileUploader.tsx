@@ -21,7 +21,7 @@ export default function FileUploader({ onUploadSuccess, setExternalLoading, setE
       return "http://127.0.0.1:8000/api/v1";
     }
     // 2. Nếu chạy bản online trên mạng, tự động gọi lên Render Cloud
-    return "https://vocab-story-api.onrender.com/api/v1"; // <-- Hãy thay link Render thật của bạn vào đây nếu deploy online
+    return "https://vocab-story-app-1.onrender.com/api/v1"; // <-- Hãy thay link Render thật của bạn vào đây nếu deploy online
   };
 
   const processUploadedFile = async (file: File) => {

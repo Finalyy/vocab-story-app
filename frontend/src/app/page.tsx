@@ -130,7 +130,7 @@ export default function Page() {
     if (typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname.startsWith("192.168."))) {
       return "http://127.0.0.1:8000/api/v1";
     }
-    return "https://vocab-story-api.onrender.com/api/v1";
+    return "https://vocab-story-app-1.onrender.com/api/v1";
   };
 
   useEffect(() => {
