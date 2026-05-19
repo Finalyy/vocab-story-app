@@ -11,7 +11,7 @@ import io
 import pypdf  # Thư viện đọc PDF siêu tốc vừa cài
 
 # --- CẤU HÌNH API KEY GEMINI ---
-GEMINI_API_KEY = "AIzaSyAhlY4vsyEw7CW5izZMFyfOufYUZbrd5x0"
+GEMINI_API_KEY = "AIzaSyD84Bd6aCJsQ7uT0q2Z1QgFC1vJhQUUJLc"
 
 genai.configure(api_key=GEMINI_API_KEY)
 
