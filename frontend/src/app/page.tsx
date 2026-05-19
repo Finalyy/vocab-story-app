@@ -10,16 +10,9 @@ import ToastProvider from "./components/providers/ToastProvider";
 import FileUploader from "./components/upload/FileUploader";
 import WordList from "./components/dictionary/WordList";
 
-// --- CÁC INTERFACES DỮ LIỆU ---
 interface StoryScene { text: string; image_prompt: string; image_url?: string; image_loading?: boolean; }
 interface SavedStory { id: string; date: string; title: string; scenes: StoryScene[]; }
-interface WordData {
-  word: string; pos?: string; ipa?: string; meaning?: string; en_meaning?: string;
-  example?: string; word_family?: string; synonyms?: string; antonyms?: string;
-  collocations?: string; confusions?: string;
-}
 
-// --- COMPONENT: HIGHLIGHTED TEXT ---
 const HighlightedText = ({ text, targets, onWordClick }: { text: string, targets: string[], onWordClick: (w: string) => void }) => {
   if (!targets || targets.length === 0) return <>{text}</>;
   const parts = useMemo(() => {
@@ -38,7 +31,6 @@ const HighlightedText = ({ text, targets, onWordClick }: { text: string, targets
           return (
             <span key={index} onClick={() => onWordClick(part)} className="inline-block bg-[#FDF0D5] text-[#804D0E] font-bold px-1.5 py-0.5 rounded mx-0.5 cursor-pointer hover:bg-[#FCE1AB] border-b-[3px] border-[#DDA343] transition relative group print:border-b-0 print:bg-transparent print:text-black print:p-0 print:mx-0">
               {part}
-              <span className="absolute -top-9 left-1/2 -translate-x-1/2 bg-slate-800 text-white text-[11px] py-1 px-2 rounded opacity-0 group-hover:opacity-100 transition pointer-events-none whitespace-nowrap z-20 print:hidden font-sans font-normal tracking-wide shadow-lg">Tra từ</span>
             </span>
           );
         }
@@ -48,7 +40,6 @@ const HighlightedText = ({ text, targets, onWordClick }: { text: string, targets
   );
 };
 
-// --- COMPONENT: COMIC SCENE ---
 const ComicScene = ({ scene, index, targets, onWordClick }: { scene: StoryScene, index: number, targets: string[], onWordClick: (w: string) => void }) => {
   return (
     <div className="page-break flex flex-col items-center mb-16 animate-in slide-in-from-bottom-4 duration-500">
@@ -58,7 +49,12 @@ const ComicScene = ({ scene, index, targets, onWordClick }: { scene: StoryScene,
           {scene.image_loading ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-50 no-print"><Loader2 size={36} className="animate-spin text-indigo-500 mb-3" /><span className="text-xs font-bold text-slate-500 tracking-wider uppercase">Đang vẽ...</span></div>
           ) : scene.image_url ? (
-            <img src={scene.image_url} alt={`Scene ${index + 1}`} className="w-full h-full object-cover filter contrast-105 saturate-105 transition-all duration-700 ease-in-out hover:scale-105" />
+            <img 
+              src={scene.image_url} 
+              alt={`Scene ${index + 1}`} 
+              onError={(e) => { e.currentTarget.src = "https://images.unsplash.com/photo-1513001900722-370f803f498d?w=800"; }} 
+              className="w-full h-full object-cover filter contrast-105 saturate-105 transition-all duration-700 ease-in-out hover:scale-105" 
+            />
           ) : (
             <div className="absolute inset-0 flex items-center justify-center text-slate-400 bg-slate-50 no-print"><ImageIcon size={40} className="opacity-40" /></div>
           )}
@@ -71,7 +67,6 @@ const ComicScene = ({ scene, index, targets, onWordClick }: { scene: StoryScene,
   );
 };
 
-// --- CHỨC NĂNG CHÍNH ---
 export default function Page() {
   const [activeTab, setActiveTab] = useState<"create" | "library">("create");
   const [inputText, setInputText] = useState("");
@@ -107,12 +102,11 @@ export default function Page() {
     try {
       const response = await fetch(`${BACKEND_URL}/generate-story`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ vocabularies: vocabList, source_language: "Vietnamese", target_language: "English" }),
+        body: JSON.stringify({ vocabularies: vocabList }),
       });
 
       if (response.ok) {
         const data = await response.json();
-        // Kiểm tra xem Backend có trả về mảng scenes hay trả về lỗi
         if (data.scenes && data.scenes[0] && data.scenes[0].text.includes("Lỗi Server")) {
             setErrorMsg(data.scenes[0].text);
             return;
@@ -121,15 +115,15 @@ export default function Page() {
         const initialScenes = data.scenes.map((s: any) => ({ ...s, image_loading: true }));
         setScenes(initialScenes);
         
-        // Tự động load ảnh trực tiếp từ AI sinh ảnh miễn phí cực nhanh, không qua backend
         initialScenes.forEach((scene: StoryScene, index: number) => {
-            const cleanPrompt = scene.image_prompt.replace(/[^a-zA-Z0-9 ]/g, "");
-            const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt + " western comic illustration")}?width=800&height=600&nologo=true`;
+            // Rút gọn prompt và thêm mã ngẫu nhiên để tránh nghẽn mạng vẽ ảnh
+            const cleanPrompt = scene.image_prompt.replace(/[^a-zA-Z0-9 ]/g, "").substring(0, 100);
+            const seed = Math.floor(Math.random() * 10000);
+            const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(cleanPrompt + " western comic")}?width=800&height=600&nologo=true&seed=${seed}`;
             
-            // Giả lập loading để người dùng thấy UI mượt
             setTimeout(() => {
                 setScenes(prev => prev ? prev.map((s, i) => i === index ? { ...s, image_url: imageUrl, image_loading: false } : s) : prev);
-            }, 1500 * (index + 1));
+            }, 1800 * (index + 1)); // Giãn thời gian load ảnh ra một chút cho an toàn
         });
 
       } else { setErrorMsg("AI trả về sai định dạng. Vui lòng thử lại!"); }
@@ -137,11 +131,7 @@ export default function Page() {
     finally { setLoading(false); }
   };
 
-  const handleWordClick = (word: string) => {
-    // Để giữ tính ổn định tuyệt đối lúc này, có thể mở rộng tính năng tra từ điển DictionaryModal sau.
-    console.log("Tra từ: ", word);
-  };
-  
+  const handleWordClick = (word: string) => { console.log("Tra từ: ", word); };
   const getVocabChips = () => {
     if (!inputText || typeof inputText !== "string") return [];
     return inputText.split(",").map(w => w.trim()).filter(w => w.length > 0);

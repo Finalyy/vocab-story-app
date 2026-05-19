@@ -11,11 +11,10 @@ from pydantic import BaseModel
 from typing import List
 from dotenv import load_dotenv
 
-# --- KHỞI TẠO BIẾN MÔI TRƯỜNG ---
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-app = FastAPI(title="VocabStory Pro API", version="8.0.0")
+app = FastAPI(title="VocabStory Pro API", version="8.1.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -27,17 +26,12 @@ app.add_middleware(
 
 class StoryRequest(BaseModel):
     vocabularies: List[str]
-    source_language: str = "Vietnamese"
-    target_language: str = "English"
 
-# --- HÀM GỌI THẲNG API GOOGLE (BYPASS SDK) ---
 def call_gemini_direct(prompt: str):
     if not GEMINI_API_KEY:
-        raise Exception("Chưa cấu hình GEMINI_API_KEY trên hệ thống máy chủ.")
+        raise Exception("Chưa cấu hình GEMINI_API_KEY")
         
-    # Gọi thẳng dòng mô hình gemini-2.5-flash chuẩn mực ổn định nhất hiện tại
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-    
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"responseMimeType": "application/json"}
@@ -50,7 +44,6 @@ def call_gemini_direct(prompt: str):
     else:
         raise Exception(f"Google API Error: {res.text}")
 
-# --- API ENDPOINTS ---
 @app.post("/api/v1/extract-vocab")
 async def extract_vocab(file: UploadFile = File(...)):
     try:
@@ -69,7 +62,6 @@ async def extract_vocab(file: UploadFile = File(...)):
             """
             response_text = call_gemini_direct(prompt)
             result_data = json.loads(response_text)
-            
             clean_words = list(dict.fromkeys([str(w).lower().strip() for w in result_data.get("extracted_words", []) if len(str(w)) > 1]))
             return {"filename": file.filename, "extracted_words": clean_words}
         else:
@@ -81,15 +73,23 @@ async def extract_vocab(file: UploadFile = File(...)):
 async def generate_story(request: StoryRequest):
     try:
         vocab_text = ", ".join(request.vocabularies)
+        
+        # PROMPT MỚI: ÉP BUỘC VIẾT TRUYỆN CHÊM TIẾNG VIỆT CHUẨN
         prompt = f"""
-        Write a short 3-scene comic story integrating these specific vocabulary words naturally: {vocab_text}.
-        The narrative must be written in {request.target_language} (with brief {request.source_language} meanings embedded right after each target word).
+        Viết một câu chuyện chêm gồm 3 cảnh (3 scenes).
+        BẮT BUỘC sử dụng các từ vựng tiếng Anh sau: {vocab_text}.
+        
+        LUẬT VIẾT TRUYỆN CHÊM NGHIÊM NGẶT: 
+        1. Ngôn ngữ kể chuyện chính BẮT BUỘC phải là TIẾNG VIỆT.
+        2. Các từ vựng yêu cầu phải được CHÊM (giữ nguyên tiếng Anh) vào giữa câu tiếng Việt, kèm theo nghĩa tiếng Việt trong ngoặc đơn.
+        3. Ví dụ chuẩn: "Hôm nay tôi đến bệnh viện và gặp một cô nurse (y tá) rất xinh đẹp."
+        
         Return ONLY a valid JSON object matching this exact structure:
         {{
             "scenes": [
                 {{
-                    "text": "The narrative text for the scene goes here.",
-                    "image_prompt": "A detailed English prompt to generate an illustration for this scene."
+                    "text": "Nội dung câu chuyện chêm bằng TIẾNG VIỆT...",
+                    "image_prompt": "A detailed ENGLISH prompt to generate a comic illustration for this scene."
                 }}
             ]
         }}
