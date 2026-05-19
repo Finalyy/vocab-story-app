@@ -40,10 +40,15 @@ except Exception:
 # --- 3. CẤU HÌNH APP & BỘ NHỚ ĐỆM TỐI ƯU ---
 app = FastAPI(title="VocabStory Pro API", version="6.0.0")
 
+# Cấu hình CORS để Vercel và Localhost đều truy cập được
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[
+        "*", 
+        "https://vocab-story-app.vercel.app", 
+        "http://localhost:3000"
+    ],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
